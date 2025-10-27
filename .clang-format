@@ -1,0 +1,28 @@
+BasedOnStyle: Google
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+
+BreakBeforeBraces: Attach   # { 与函数同一行
+ColumnLimit: 120
+
+PointerAlignment: Left       # int* p; 而不是 int *p;
+SpaceAfterCStyleCast: true
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+
+SortIncludes: true
+IncludeBlocks: Preserve
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+NamespaceIndentation: None
+AccessModifierOffset: -2
+
+# 可选增强：控制函数声明的换行方式
+BinPackParameters: false
+BinPackArguments: false
+AlignAfterOpenBracket: Align

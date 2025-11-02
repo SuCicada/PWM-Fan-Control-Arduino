@@ -1,5 +1,8 @@
 #include <CRC.h>
 #include "Arduino.h"
+#include "HardwareSerial.h"
+#include <StringUtil.h>
+using namespace StringUtil;
 
 const String KEY = "fanpwm:";
 
@@ -27,9 +30,9 @@ public:
         if (str.startsWith(KEY)) {
             String value = str.substring(KEY.length());
             // value[0]
-
-            int speed_i = value.indexOf(':');
-            if (speed_i == -1) return false;
+            fprintf(Serial, "value: %s\n", value.c_str());
+            int speed_i = 0;
+            // if (speed_i == -1) return false;
 
             int seq_i = value.indexOf(':', speed_i + 1);
             if (seq_i == -1) return false;
@@ -38,21 +41,28 @@ public:
             if (crc_i == -1) return false;
 
 
-            this->speed = value.substring(0, speed_i).toInt();
-            this->seq = value.substring(seq_i + 1).toInt();
+            this->speed = value.substring(speed_i, seq_i).toInt();
+            this->seq = value.substring(seq_i + 1, crc_i).toInt();
             this->crc = strtol(value.substring(crc_i + 1).c_str(),NULL,16);
+
+            fprintf(Serial, "decode res: speed: %d, seq: %d, crc: %d\n", this->speed, this->seq, this->crc);
             return true;
         }
+        Serial.println("not cmd, skip");
         return false;
     }
 
     bool checkCrc() {
         uint8_t crc = calcCrc();
-        return this->crc == crc;
+        bool res = this->crc == crc;
+        if (!res) {
+            fprintf(Serial, "checkCrc error: %d, %d\n", this->crc, crc);
+        }
+        return res;
     }
 
     uint8_t calcCrc() {
-        String str = String(this->speed) + ":" + String(this->seq);
+        String str = KEY + String(this->speed) + ":" + String(this->seq);
         uint8_t crc = calcCRC8((uint8_t*) str.c_str(), str.length());
         // this->crc = crc;
         return crc;
@@ -61,7 +71,7 @@ public:
 
 class RespData {
 public:
-    int rpm = 0;
+    int rpm = 0; 
     int speed = 0;
 
     RespData(int rpm,int speed) {

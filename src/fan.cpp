@@ -1,5 +1,6 @@
 #include <avr/wdt.h>
 #include "Arduino.h"
+#include "WString.h"
 #include "data.h"
 
 const int sensorPin = 3;
@@ -11,28 +12,19 @@ void tachISR() {
     pulseCount++;
 }
 
-void setup() {
-    Serial.begin(115200);
-    pinMode(fanPin, OUTPUT);
-    pinMode(sensorPin, INPUT_PULLUP);
-    // pinMode(buttonPin, INPUT);
-    // pinMode(fanLightPin, OUTPUT);
-    attachInterrupt(digitalPinToInterrupt(sensorPin), tachISR, FALLING);
-
-    analogWrite(fanPin, 0);
-
-    wdt_enable(WDTO_2S);  // 8 ms watchdog
-}
+int SPEED = 0;
 
 void setSpeed(int speed) {
     analogWrite(fanPin, speed);
     Serial.print("Speed: ");
     Serial.println(speed);
+    SPEED = speed;
 }
 
-int speed = 0;
 
-int preSeq = 0;
+// int preSeq = 0;
+String preCmd = "";
+
 bool readAndHandle() {
     if (Serial.available() > 0) {
         // 如果串口缓冲区中有可用数据
@@ -52,14 +44,21 @@ bool readAndHandle() {
         }
 
         if (!req->checkCrc()) {
+            Serial.println("CRC error");
             return false;
         }
 
-        if (req->seq == preSeq) {
-            return false;
+        // if (req->seq == preSeq) {
+            // return true;
+        // }
+
+        if (preCmd == s) {
+            Serial.println("cmd repeat, skip");
+            return true;
         }
 
-        preSeq = req->seq;
+        // preSeq = req->seq;
+        preCmd = s;
 
         int speed = req->speed;
         if (speed > 0) {
@@ -81,22 +80,46 @@ bool readAndHandle() {
 
 void getRpm() {
     unsigned long rpm = (pulseCount / 2);  // 每转 2 脉冲
+    rpm *= 60;
     Serial.print("RPM: ");
     Serial.println(rpm);
     pulseCount = 0;
 
 
-    String resp = RespData(rpm, speed).encode();
+    String resp = RespData(rpm, SPEED).encode();
     Serial.println(resp);
 }
 
+void setup() {
+    // Serial.begin(115200);
+    // wdt_disable();
+    Serial.println("========================");
+    Serial.println("setup start");
 
+    Serial.begin(9600);
+
+    pinMode(fanPin, OUTPUT);
+    pinMode(sensorPin, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(sensorPin), tachISR, FALLING);
+
+    analogWrite(fanPin, 0);
+
+    wdt_enable(WDTO_2S);
+    Serial.println("wdt enabled");
+    Serial.println("setup done");
+    Serial.println("========================");
+}
+
+// 
+// void setup() {
+// 
+// }
 void loop() {
     
     getRpm();
 
     bool ok = readAndHandle();
-    if (!ok) {
+    if (ok) {
         wdt_reset();  // 喂狗操作，使看门狗定时器复位
     }
 

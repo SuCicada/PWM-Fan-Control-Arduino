@@ -24,7 +24,7 @@ type Config struct {
 
 func getFanSpeedFromTemperature(temperature int) (int, error) {
 	var config Config
-	cfg, err := os.ReadFile("config.yml")
+	cfg, err := os.ReadFile(CONFIG_FILE)
 	if err != nil {
 		return 0, err
 	}
@@ -98,7 +98,7 @@ func runAutoContorl(dryrun bool) {
 
 func doCheckAndSendPayload(fanSpeed int) {
 	serialController := &SerialController{
-		portName: serialPortName,
+		portName: SERIAL_PORT_NAME,
 	}
 	err := serialController.doCheckAndSendPayload(PayloadReq{
 		Speed: fanSpeed,
@@ -110,7 +110,7 @@ func doCheckAndSendPayload(fanSpeed int) {
 
 func setFanSpeed(fanSpeed int) {
 	serialController := &SerialController{
-		portName: serialPortName,
+		portName: SERIAL_PORT_NAME,
 	}
 	payload := PayloadReq{
 		Speed: fanSpeed,
@@ -122,7 +122,7 @@ func setFanSpeed(fanSpeed int) {
 }
 func readFanSpeed() int {
 	serialController := &SerialController{
-		portName: serialPortName,
+		portName: SERIAL_PORT_NAME,
 	}
 	payloadRes, err := serialController.readFanFromSerial()
 	if err != nil {
@@ -134,7 +134,8 @@ func readFanSpeed() int {
 
 const DEFAULT_SERIAL_PORT = "/dev/ttyUSB0"
 
-var serialPortName string = DEFAULT_SERIAL_PORT
+var SERIAL_PORT_NAME string
+var CONFIG_FILE string
 
 func main() {
 
@@ -143,12 +144,14 @@ func main() {
 	var dryRun bool
 	var readOnly bool
 	var setOnly bool
+
 	flag.IntVar(&fanSpeed, "fan", -1, "manual set fan speed")
-	flag.StringVar(&serialPortName, "port", DEFAULT_SERIAL_PORT, "serial port")
+	flag.StringVar(&SERIAL_PORT_NAME, "port", DEFAULT_SERIAL_PORT, "serial port")
 	// flag.BoolVar(&autosetEnable, "autoset", false, "set mode")
 	flag.BoolVar(&dryRun, "dryrun", false, "dry run")
 	flag.BoolVar(&readOnly, "readonly", false, "read only")
 	flag.BoolVar(&setOnly, "setonly", false, "set only, no check and send payload")
+	flag.StringVar(&CONFIG_FILE, "config", "config.yml", "config file")
 	flag.Parse()
 
 	// ------------------------------------------------

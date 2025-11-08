@@ -42,9 +42,6 @@ func (s *SerialController) getSerial() (serial.Port, error) {
 	return serialPort, nil
 }
 
-var currentFanSpeed int = 0
-var start = false
-
 func (s *SerialController) readFanFromSerial() (*PayloadRes, error) {
 	s.getSerial()
 
@@ -98,7 +95,7 @@ func (s *SerialController) readFanFromSerial() (*PayloadRes, error) {
 				continue
 			}
 			log.Println("read fan from serial", payloadRes)
-			currentFanSpeed = payloadRes.Speed
+			// currentFanSpeed = payloadRes.Speed
 			break
 		}
 	}

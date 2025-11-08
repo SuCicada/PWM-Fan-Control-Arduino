@@ -44,7 +44,7 @@ An intelligent PWM fan control system based on Arduino, featuring real-time RPM 
   - Pin 3: Fan TACH signal (interrupt input)
   - Pin 5: PWM output
 
-[Hardware Connection Diagram](./doc/breadboard_.png)
+![Hardware Connection Diagram](./doc/breadboard.png)
 
 ## Quick Start
 

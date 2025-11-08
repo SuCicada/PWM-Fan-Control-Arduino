@@ -44,7 +44,7 @@
   - Pin 3: 风扇 TACH 信号（中断输入）
   - Pin 5: PWM 输出
 
-[硬件连接示意图](./doc/breadboard_.png)
+![硬件连接示意图](./doc/breadboard.png)
 
 ## 快速开始
 

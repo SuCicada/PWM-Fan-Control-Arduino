@@ -16,25 +16,6 @@ An intelligent PWM fan control system based on Arduino, featuring real-time RPM 
 - **Flexible Configuration**: YAML config file for custom temperature curves
 - **Multiple Modes**: Auto mode, manual mode, read-only mode, test mode
 
-## Technical Highlights
-
-1. **Industrial-Grade Reliability**
-   - CRC validation ensures accurate data transmission
-   - Watchdog timer prevents system crashes
-   - EEPROM persistent storage
-
-2. **Real-time Feedback**
-   - Reads actual fan RPM values
-   - Can detect fan failures
-   - Bidirectional communication protocol
-
-3. **Hardware Interrupt Design**
-   - Uses hardware interrupts for precise tachometer pulse counting
-   - Accurate measurements even under high load
-
-4. **Intelligent Temperature Curve**
-   - Automatically finds optimal fan speed based on GPU temperature
-   - Smooth transitions between temperature zones
 
 ## Hardware Connection
 

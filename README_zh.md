@@ -70,3 +70,11 @@ serial_port: /dev/ttyUSB0
 📈 Future Improvements
 [ ] Fix RPM 检测
 [ ] 实时记录RPM到PC
+
+
+
+# 为什么要做这个
+
+我的GPU是一个魔改的 GTX2080Ti 22GB，它有一个独立的水冷系统，带巨大的3个风扇。这个风扇是脱离主板控制的，默认情况下它是全速运转的，噪音太大了。所以我需要一个能用软件来自动控制它的方案。
+
+![我帅气的机箱](./doc/my_cool_pc.jpg)

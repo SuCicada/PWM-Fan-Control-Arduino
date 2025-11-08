@@ -71,3 +71,10 @@ Response: fanpwm:<RPM>:<speed>
 - [ ] Fix RPM detection
 - [ ] Real-time RPM logging to PC
 
+
+
+## Why This Project?
+
+My GPU is a heavily modified GTX2080Ti 22GB, equipped with a dedicated water cooling system and three huge fans. These fans are not controlled by the motherboard, so by default, they always run at full speed which is extremely noisy. I wanted a software solution that could automatically and intelligently control the fan speed for improved comfort and flexibility.
+
+![My Cool PC](./doc/my_cool_pc.jpg)

@@ -22,3 +22,14 @@ upload: build
 
 upload-fan:
 	env=nano sumake upload
+
+# build-gpu_fan_auto_control:
+upload-gpu_fan_auto_control-py:
+	cp tool/gpu_fan_auto_control/config.yml tool/gpu_fan_auto_control/dist/config.yml
+	$(call upload, tool/gpu_fan_auto_control/dist/, TOOL/gpu_fan_auto_control/)
+
+upload-gpu_fan_auto_control:
+	cd tool/gpu_fan_auto_control-go && \
+		GOARCH=amd64 GOOS=linux go build -o gpu_fan_auto_control .
+	$(call upload, tool/gpu_fan_auto_control-go/gpu_fan_auto_control, TOOL/gpu_fan_auto_control/gpu_fan_auto_control)
+	$(call upload, tool/gpu_fan_auto_control-go/config.yml, TOOL/gpu_fan_auto_control/config.yml)

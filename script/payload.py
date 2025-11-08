@@ -1,4 +1,6 @@
 # pip install crc
+import random
+
 from crc import Calculator, Crc8
 
 KEY = "fanpwm:"
@@ -21,9 +23,12 @@ class Payload:
         hex_res = hex(res)[2:].zfill(2)
         return hex_res
 
+import random
+import sys
 
-SPEED = 255
-SEQ = 3
+if __name__ == "__main__":
+    SPEED = sys.argv[1]
+    SEQ = random.randint(1, 100)
 
-payload = Payload(SPEED, SEQ)
-print(payload)
+    payload = Payload(SPEED, SEQ)
+    print(payload)

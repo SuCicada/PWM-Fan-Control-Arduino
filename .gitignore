@@ -10,3 +10,13 @@ compile_commands.json
 .idea
 .cache
 .env
+
+tool/gpu_fan_auto_control-go/gpu_fan_auto_control
+
+
+__pycache__
+
+build
+dist
+*.spec
+.venv

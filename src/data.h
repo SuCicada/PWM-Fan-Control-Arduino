@@ -1,5 +1,4 @@
 #include <CRC.h>
-#include "Arduino.h"
 #include "HardwareSerial.h"
 #include <StringUtil.h>
 using namespace StringUtil;

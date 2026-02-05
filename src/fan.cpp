@@ -21,8 +21,7 @@ int SPEED = 0;
 
 void setSpeed(int speed) {
     analogWrite(fanPin, speed);
-    Serial.print("Speed: ");
-    Serial.println(speed);
+    fprintf(Serial, "currentSpeed: %d newSpeed: %d\n", SPEED, speed);
     
     // 只有当速度真正改变时才写入 EEPROM（避免频繁写入）
     if (SPEED != speed) {
@@ -131,6 +130,8 @@ void setup() {
         Serial.print("Restored speed from EEPROM: ");
         Serial.println(savedSpeed);
     }
+    // setup时候先手动给值，跳过EEPROM写入
+    SPEED = savedSpeed;
     setSpeed(savedSpeed);
 
     wdt_enable(WDTO_2S);

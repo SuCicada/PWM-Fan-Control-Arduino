@@ -14,14 +14,14 @@ env = nano
 build:
 	pio run -e $(env) -v
 
-.PHONY: build deploy upload
-upload: build
+.PHONY: build deploy _upload
+_upload: build
 	$(call upload, .pio/build/nano/firmware.hex, /tmp/firmware-$(env).hex)
 	$(call ssh_file, ./deploy.sh, /tmp/firmware-$(env).hex)
 # pio run -t upload -e $(env)
 
 upload-fan:
-	env=nano sumake upload
+	env=nano sumake _upload
 
 # build-gpu_fan_auto_control:
 # upload-gpu_fan_auto_control-py:

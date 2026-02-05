@@ -163,9 +163,9 @@ func main() {
 
 	if fanSpeed >= 0 {
 		if setOnly {
-			doCheckAndSendPayload(fanSpeed)
-		} else {
 			setFanSpeed(fanSpeed)
+		} else {
+			doCheckAndSendPayload(fanSpeed)
 		}
 	} else {
 		runAutoContorl(dryRun)

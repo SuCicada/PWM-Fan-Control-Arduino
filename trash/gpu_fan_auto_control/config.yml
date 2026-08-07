@@ -1,0 +1,7 @@
+config:
+  - temp: 20
+    fan: 50
+  - temp: 30
+    fan: 150
+  - temp: 35
+    fan: 255

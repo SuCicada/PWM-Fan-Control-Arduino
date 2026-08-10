@@ -1,6 +1,0 @@
-#/bin/bash
-
-# mock nvidia-smi output
-echo "30"
-
-

@@ -1,3 +1,5 @@
+# 温度档位：温度 >= temp 就用对应的 fan（0-255）。
+# 写乱顺序也没关系，程序加载时会自己按 temp 排序。
 fan_level:
   - temp: 20
     fan: 50
@@ -5,6 +7,12 @@ fan_level:
     fan: 150
   - temp: 35
     fan: 255
-    
-serial_port: 
-  /dev/ttyUSB0
+
+# 温度低于最低档阈值时使用的转速。设为 0 表示允许完全停转。
+min_fan: 50
+
+# 降档额外需要满足的温度余量（℃）。温度在阈值附近抖动时靠它避免来回跳档。
+hysteresis: 3
+
+# 串口设备。命令行 -port 会覆盖这里的值。
+serial_port: /dev/ttyUSB0

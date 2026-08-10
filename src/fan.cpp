@@ -1,15 +1,26 @@
 #include <avr/wdt.h>
+#include <util/atomic.h>
 #include <EEPROM.h>
 #include "Arduino.h"
-#include "StringUtil.h"
-#include "WString.h"
 #include "data.h"
 
 const int sensorPin = 3;
 const int fanPin = 5;
 
-// EEPROM 地址用于保存风扇速度
 const int EEPROM_SPEED_ADDR = 0;
+const int EEPROM_MAGIC_ADDR = 1;
+// 空白 EEPROM 读出来是 0xFF，靠单独的标记位区分「存过 255」和「从没存过」
+const uint8_t EEPROM_MAGIC = 0xA5;
+
+const int DEFAULT_SPEED = 128;
+
+// 中断挂在 CHANGE 上，一个 tach 脉冲的上升沿和下降沿各触发一次；
+// 4 线风扇每转 2 个脉冲，所以每转对应 4 次计数。
+const unsigned long COUNTS_PER_REV = 4;
+const unsigned long REPORT_INTERVAL_MS = 1000;
+
+// 放得下 "fanpwm:255:255:ff" 并留有余量
+const uint8_t CMD_BUF_SIZE = 32;
 
 volatile unsigned long pulseCount = 0;
 
@@ -17,140 +28,137 @@ void tachISR() {
     pulseCount++;
 }
 
-int SPEED = 0;
+int currentSpeed = 0;
+
+char cmdBuf[CMD_BUF_SIZE];
+uint8_t cmdLen = 0;
+char lastCmd[CMD_BUF_SIZE] = "";
+
+unsigned long lastReportMs = 0;
 
 void setSpeed(int speed) {
     analogWrite(fanPin, speed);
-    fprintf(Serial, "currentSpeed: %d newSpeed: %d\n", SPEED, speed);
-    
-    // 只有当速度真正改变时才写入 EEPROM（避免频繁写入）
-    if (SPEED != speed) {
-        EEPROM.write(EEPROM_SPEED_ADDR, speed);
-        Serial.println("Speed saved to EEPROM");
+
+    Serial.print(F("speed: "));
+    Serial.print(currentSpeed);
+    Serial.print(F(" -> "));
+    Serial.println(speed);
+
+    if (currentSpeed != speed) {
+        EEPROM.update(EEPROM_SPEED_ADDR, (uint8_t) speed);
+        EEPROM.update(EEPROM_MAGIC_ADDR, EEPROM_MAGIC);
     }
-    
-    SPEED = speed;
+    currentSpeed = speed;
 }
 
-// int preSeq = 0;
-String preCmd = "";
+void handleCommand(const char* line) {
+    Serial.print(F("recv: "));
+    Serial.println(line);
 
-bool readAndHandle() {
-    if (Serial.available() > 0) {
-        // 如果串口缓冲区中有可用数据
-        String s = Serial.readString();
-        //        char receivedChar = (char)Serial.read(); // 读取字符
-        // 在这里可以对接收到的数据进行处理
-        s.trim();
-        Serial.print("Received: ");  // 发送响应消息
-        Serial.println(s);
-
-        // if (s == "reset") {
-        // }
-
-        ReqData* req = ReqData::NewFromString(s);
-        if (req == nullptr) {
-            return false;
-        }
-
-        if (!req->checkCrc()) {
-            Serial.println("CRC error");
-            return false;
-        }
-
-        // if (req->seq == preSeq) {
-        // return true;
-        // }
-
-        if (preCmd == s) {
-            Serial.println("cmd repeat, skip");
-            return true;
-        }
-
-        // preSeq = req->seq;
-        preCmd = s;
-
-        int speed = req->speed;
-        if (speed > 0) {
-            if (speed > 255) {
-                speed = 255;
-            }
-            if (speed < 1) {
-                speed = 1;
-            }
-            setSpeed(speed);
-
-        } else {
-            return false;
-        }
+    ReqData req;
+    if (!req.decode(line)) {
+        Serial.println(F("not a command, skip"));
+        return;
     }
+    if (!req.checkCrc()) {
+        Serial.print(F("crc error, want "));
+        Serial.println(req.expectedCrc(), HEX);
+        return;
+    }
+    if (strcmp(lastCmd, line) == 0) {
+        Serial.println(F("duplicate cmd, skip"));
+        return;
+    }
+    strncpy(lastCmd, line, CMD_BUF_SIZE - 1);
+    lastCmd[CMD_BUF_SIZE - 1] = '\0';
 
-    return true;
+    int speed = req.speed;
+    if (speed < 0) {
+        speed = 0;
+    }
+    if (speed > 255) {
+        speed = 255;
+    }
+    setSpeed(speed);
 }
 
-void getRpm() {
-    unsigned long rpm = (pulseCount / 2);  // 每转 2 脉冲
-    rpm *= 60;
-    fprintf(Serial, "pulseCount: %l, RPM: %l \n", pulseCount, rpm);
-    Serial.print("RPM: ");
-    Serial.println(rpm);
-    pulseCount = 0;
+// 逐字节收取，攒够一整行才交给 handleCommand。
+// 全程不阻塞，半行数据会留在缓冲区等下一轮，看门狗因此始终有充足余量。
+void pollSerial() {
+    while (Serial.available() > 0) {
+        char c = (char) Serial.read();
+        if (c == '\r') {
+            continue;
+        }
+        if (c != '\n') {
+            if (cmdLen < CMD_BUF_SIZE - 1) {
+                cmdBuf[cmdLen++] = c;
+            }
+            continue;
+        }
 
-    String resp = RespData(rpm, SPEED).encode();
-    Serial.println(resp);
+        cmdBuf[cmdLen] = '\0';
+        if (cmdLen > 0) {
+            handleCommand(cmdBuf);
+        }
+        cmdLen = 0;
+    }
+}
+
+void reportRpm() {
+    unsigned long now = millis();
+    unsigned long elapsed = now - lastReportMs;
+    if (elapsed < REPORT_INTERVAL_MS) {
+        return;
+    }
+    lastReportMs = now;
+
+    // pulseCount 有 4 字节，AVR 上读写会被 ISR 从中间打断，必须整块保护
+    unsigned long counts;
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        counts = pulseCount;
+        pulseCount = 0;
+    }
+
+    // 按实际经过的毫秒数换算，不能假定这一轮刚好是 1 秒
+    unsigned long rpm = (counts * 60000UL) / (COUNTS_PER_REV * elapsed);
+
+    RespData(rpm, currentSpeed).printTo(Serial);
 }
 
 void setup() {
-    // Serial.begin(115200);
     Serial.begin(9600);
 
-    // wdt_disable();
-    Serial.println("========================");
-    Serial.println("setup start");
+    Serial.println(F("========================"));
+    Serial.println(F("setup start"));
 
     pinMode(fanPin, OUTPUT);
     pinMode(sensorPin, INPUT_PULLUP);
-    // 边沿触发
-    // attachInterrupt(digitalPinToInterrupt(sensorPin), tachISR, FALLING);
-    // 尝试上升沿
-    // attachInterrupt(digitalPinToInterrupt(sensorPin), tachISR, RISING);
-    // 或者尝试任意边沿变化
     attachInterrupt(digitalPinToInterrupt(sensorPin), tachISR, CHANGE);
 
-    // analogWrite(fanPin, 0);
-    Serial.println("attachInterrupt setup done");
-
-    // 从 EEPROM 读取上次保存的速度
-    int savedSpeed = EEPROM.read(EEPROM_SPEED_ADDR);
-    // 检查读取的值是否有效（0-255），如果是首次使用或无效值，使用默认速度 128
-    if (savedSpeed <= 0 || savedSpeed > 255) {
-        savedSpeed = 128;  // 默认 50% 速度
-        Serial.println("No valid speed in EEPROM, using default: 128");
+    int savedSpeed = DEFAULT_SPEED;
+    if (EEPROM.read(EEPROM_MAGIC_ADDR) == EEPROM_MAGIC) {
+        savedSpeed = EEPROM.read(EEPROM_SPEED_ADDR);
+        Serial.print(F("restored speed from EEPROM: "));
     } else {
-        Serial.print("Restored speed from EEPROM: ");
-        Serial.println(savedSpeed);
+        Serial.print(F("no speed in EEPROM, using default: "));
     }
-    // setup时候先手动给值，跳过EEPROM写入
-    SPEED = savedSpeed;
+    Serial.println(savedSpeed);
+
+    // 先对齐 currentSpeed，避免 setSpeed 把刚读出来的值原样写回 EEPROM
+    currentSpeed = savedSpeed;
     setSpeed(savedSpeed);
 
+    lastReportMs = millis();
+
+    // 一轮 loop 现在最多几百毫秒（全是串口输出耗时），2s 留了足够余量
     wdt_enable(WDTO_2S);
-    Serial.println("wdt enabled");
-    Serial.println("setup done");
-    Serial.println("========================");
+    Serial.println(F("setup done"));
+    Serial.println(F("========================"));
 }
 
-//
-// void setup() {
-//
-// }
 void loop() {
-    getRpm();
-
-    bool ok = readAndHandle();
-    if (ok) {
-        wdt_reset();  // 喂狗操作，使看门狗定时器复位
-    }
-
-    delay(1000);
+    pollSerial();
+    reportRpm();
+    wdt_reset();
 }

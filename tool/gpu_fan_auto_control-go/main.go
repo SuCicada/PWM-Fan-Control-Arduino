@@ -1,8 +1,8 @@
-// gpu_temp_smi.go
 package main
 
 import (
-	"bytes"
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -10,172 +10,156 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-
-	"gopkg.in/yaml.v3"
+	"time"
 )
 
-type Config struct {
-	FanLevel []struct {
-		Temp int `yaml:"temp"`
-		Fan  int `yaml:"fan"`
-	} `yaml:"fan_level"`
-	SerialPort string `yaml:"serial_port"`
-}
+const nvidiaSMITimeout = 5 * time.Second
 
-func getFanSpeedFromTemperature(temperature int) (int, error) {
-	var config Config
-	cfg, err := os.ReadFile(CONFIG_FILE)
-	if err != nil {
-		return 0, err
-	}
-	err = yaml.Unmarshal(cfg, &config)
-	if err != nil {
-		return 0, err
-	}
-	fanSpeed := 0
-	for _, item := range config.FanLevel {
-		if temperature < item.Temp {
-			break
-		}
-		fanSpeed = item.Fan
-	}
-	return fanSpeed, nil
-}
-
+// 需要目标机上装有 NVIDIA 驱动自带的 nvidia-smi
 func gpuTemps() ([]int, error) {
-	// 需要目标 Linux 上已安装 NVIDIA 驱动自带的 nvidia-smi
-	cmd := exec.Command("nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits")
+	ctx, cancel := context.WithTimeout(context.Background(), nvidiaSMITimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("nvidia-smi timed out after %v", nvidiaSMITimeout)
+		}
+		// Output 失败时 stderr 已经在 ExitError 里，不需要再跑一次 nvidia-smi
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return nil, fmt.Errorf("nvidia-smi: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, fmt.Errorf("nvidia-smi: %w", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	temps := make([]int, 0, len(lines))
-	for _, ln := range lines {
-		ln = strings.TrimSpace(ln)
-		if ln == "" {
+
+	var temps []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		v, err := strconv.Atoi(ln)
+		v, err := strconv.Atoi(line)
 		if err != nil {
-			return nil, fmt.Errorf("parse temp %q: %w", ln, err)
+			return nil, fmt.Errorf("parse temperature %q: %w", line, err)
 		}
 		temps = append(temps, v)
+	}
+	if len(temps) == 0 {
+		return nil, errors.New("nvidia-smi reported no GPU temperature")
 	}
 	return temps, nil
 }
 
-func runAutoContorl(dryrun bool) {
-	ts, err := gpuTemps()
+func maxGPUTemp() (int, error) {
+	temps, err := gpuTemps()
 	if err != nil {
-		// 打印 nvidia-smi 的stderr方便诊断
-		var stderr bytes.Buffer
-		cmd := exec.Command("nvidia-smi")
-		cmd.Stderr = &stderr
-		_ = cmd.Run()
-		fmt.Printf("read error: %v\nnvidia-smi stderr: %s\n", err, stderr.String())
-		return
+		return 0, err
 	}
-
-	maxTemp := 0
-	for _, t := range ts {
+	maxTemp := temps[0]
+	for _, t := range temps[1:] {
 		maxTemp = max(maxTemp, t)
 	}
-
-	// calculate fan speed from temperature
-	shouldFanSpeed, err := getFanSpeedFromTemperature(maxTemp)
-	if err != nil {
-		fmt.Printf("get fan speed error: %v\n", err)
-		return
-	}
-	fmt.Printf("max temp: %d°C, should set fan speed: %d\n", maxTemp, shouldFanSpeed)
-
-	if !dryrun {
-		log.Println("autoset mode, set fan speed to", shouldFanSpeed)
-		doCheckAndSendPayload(shouldFanSpeed)
-	}
+	return maxTemp, nil
 }
 
-func doCheckAndSendPayload(fanSpeed int) {
-	serialController := &SerialController{
-		portName: SERIAL_PORT_NAME,
-	}
-	err := serialController.doCheckAndSendPayload(PayloadReq{
-		Speed: fanSpeed,
-	})
+func runAutoControl(cfg *Config, sc *SerialController, dryRun bool) error {
+	temp, err := maxGPUTemp()
 	if err != nil {
-		fmt.Printf("send payload error: %v\n", err)
+		return err
 	}
+
+	// 迟滞判断需要知道风扇当前转速，所以先读一次状态
+	current, err := sc.ReadStatus(statusTimeout)
+	if err != nil {
+		return err
+	}
+
+	target := cfg.FanSpeedFor(temp, current.Speed)
+	log.Printf("max temp %d°C, current speed %d, target speed %d", temp, current.Speed, target)
+
+	if dryRun {
+		log.Println("dryrun, nothing sent")
+		return nil
+	}
+	if target == current.Speed {
+		return nil
+	}
+	return sc.SetSpeedVerified(target)
 }
 
-func setFanSpeed(fanSpeed int) {
-	serialController := &SerialController{
-		portName: SERIAL_PORT_NAME,
-	}
-	payload := PayloadReq{
-		Speed: fanSpeed,
-	}
-	err := serialController.sendToSerial(payload.Encode() + "\n")
+// applySpeed 只在转速确实需要变化时才下发，省掉固件一次无谓的 EEPROM 写入。
+func applySpeed(sc *SerialController, speed int) error {
+	current, err := sc.ReadStatus(statusTimeout)
 	if err != nil {
-		fmt.Printf("send payload error: %v\n", err)
+		return err
 	}
+	if current.Speed == speed {
+		log.Printf("fan speed already %d, skip", speed)
+		return nil
+	}
+	return sc.SetSpeedVerified(speed)
 }
-func readFanSpeed() int {
-	serialController := &SerialController{
-		portName: SERIAL_PORT_NAME,
-	}
-	payloadRes, err := serialController.readFanFromSerial()
-	if err != nil {
-		fmt.Printf("read fan speed error: %v\n", err)
-		return -1
-	}
-	return payloadRes.Speed
-}
-
-const DEFAULT_SERIAL_PORT = "/dev/ttyUSB0"
-
-var SERIAL_PORT_NAME string
-var CONFIG_FILE string
 
 func main() {
+	log.SetFlags(log.Ldate | log.Ltime)
+	if err := run(); err != nil {
+		log.Printf("error: %v", err)
+		os.Exit(1)
+	}
+}
 
-	var fanSpeed int
-	// var autosetEnable bool
-	var dryRun bool
-	var readOnly bool
-	var setOnly bool
-
-	flag.IntVar(&fanSpeed, "fan", -1, "manual set fan speed")
-	flag.StringVar(&SERIAL_PORT_NAME, "port", DEFAULT_SERIAL_PORT, "serial port")
-	// flag.BoolVar(&autosetEnable, "autoset", false, "set mode")
-	flag.BoolVar(&dryRun, "dryrun", false, "dry run")
-	flag.BoolVar(&readOnly, "readonly", false, "read only")
-	flag.BoolVar(&setOnly, "setonly", false, "set only, no check and send payload")
-	flag.StringVar(&CONFIG_FILE, "config", "config.yml", "config file")
+func run() error {
+	var (
+		fanSpeed   int
+		portFlag   string
+		configFile string
+		dryRun     bool
+		readOnly   bool
+		setOnly    bool
+	)
+	flag.IntVar(&fanSpeed, "fan", -1, "manually set fan speed (0-255); omit to run temperature control")
+	flag.StringVar(&portFlag, "port", "", "serial port, overrides serial_port in the config file (default "+defaultSerialPort+")")
+	flag.StringVar(&configFile, "config", "config.yml", "config file")
+	flag.BoolVar(&dryRun, "dryrun", false, "compute the target speed but do not send it")
+	flag.BoolVar(&readOnly, "readonly", false, "read the current fan speed and exit")
+	flag.BoolVar(&setOnly, "setonly", false, "send the speed without reading it back to verify")
 	flag.Parse()
 
-	// ------------------------------------------------
-	if readOnly {
-		fanSpeed := readFanSpeed()
-		fmt.Printf("current fan speed: %d\n", fanSpeed)
-		return
+	if fanSpeed > maxFanSpeed {
+		return fmt.Errorf("-fan %d is out of range 0-%d", fanSpeed, maxFanSpeed)
 	}
 
-	if fanSpeed >= 0 {
-		if setOnly {
-			setFanSpeed(fanSpeed)
-		} else {
-			doCheckAndSendPayload(fanSpeed)
+	// 只有温控模式离不开配置文件，手动和只读模式缺配置也应该能用
+	needsConfig := !readOnly && fanSpeed < 0
+	cfg, err := LoadConfig(configFile)
+	if err != nil {
+		if needsConfig {
+			return err
 		}
-	} else {
-		runAutoContorl(dryRun)
+		log.Printf("warning: %v, continuing without config", err)
 	}
 
-	// // run()
-	// serialController := &SerialController{
-	// 	portName: SERIAL_PORT,
-	// }
-	// err := serialController.sendPayload(PayloadReq{
-	// 	Speed: 10,
-	// })
+	sc := NewSerialController(cfg.ResolveSerialPort(portFlag))
+	defer sc.Close()
+
+	switch {
+	case readOnly:
+		res, err := sc.ReadStatus(statusTimeout)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("fan speed: %d, rpm: %d\n", res.Speed, res.RPM)
+		return nil
+
+	case fanSpeed >= 0:
+		if setOnly {
+			return sc.Send(NewPayloadReq(fanSpeed))
+		}
+		return applySpeed(sc, fanSpeed)
+
+	default:
+		return runAutoControl(cfg, sc, dryRun)
+	}
 }

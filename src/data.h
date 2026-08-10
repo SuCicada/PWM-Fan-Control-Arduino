@@ -1,84 +1,73 @@
+#pragma once
+
+#include <Arduino.h>
 #include <CRC.h>
-#include "HardwareSerial.h"
-#include <StringUtil.h>
-using namespace StringUtil;
 
-const String KEY = "fanpwm:";
+// 线协议（两个方向都以 '\n' 结尾）：
+//   请求  fanpwm:<speed>:<seq>:<crc8>
+//   响应  fanpwm:<rpm>:<speed>
+// crc8 是 "fanpwm:<speed>:<seq>" 的 CRC-8，两位十六进制。
+// 参数为 poly 0x07 / init 0x00 / xorOut 0x00 / 不反转，与 Go 侧 crc8.CRC8 一致。
+const char KEY[] = "fanpwm:";
+const uint8_t KEY_LEN = sizeof(KEY) - 1;
 
-class ReqData {
-public:
+// 重建待校验串所需空间：前缀 + 两个 int 的十进制形式 + 分隔符
+const uint8_t CRC_BUF_SIZE = KEY_LEN + 16;
+
+struct ReqData {
     int speed = 0;
     int seq = 0;
     uint8_t crc = 0;
 
-    explicit ReqData() {}
-
-    // 单参数构造函数应该标记为explicit，以避免意外的隐式转换。
-    static ReqData* NewFromString(String str) {
-        ReqData* req = new ReqData();
-        if (req->decode(str)) {
-            return req;
-
-        } else {
-            delete req;
-            return nullptr;
+    bool decode(const char* line) {
+        if (strncmp(line, KEY, KEY_LEN) != 0) {
+            return false;
         }
-    }
-    bool decode(String str) {
-        str.trim();
-        if (str.startsWith(KEY)) {
-            String value = str.substring(KEY.length());
-            // value[0]
-            fprintf(Serial, "value: %s\n", value.c_str());
-            int speed_i = 0;
-            // if (speed_i == -1) return false;
+        const char* value = line + KEY_LEN;
 
-            int seq_i = value.indexOf(':', speed_i + 1);
-            if (seq_i == -1) return false;
-
-            int crc_i = value.indexOf(':', seq_i + 1);
-            if (crc_i == -1) return false;
-
-
-            this->speed = value.substring(speed_i, seq_i).toInt();
-            this->seq = value.substring(seq_i + 1, crc_i).toInt();
-            this->crc = strtol(value.substring(crc_i + 1).c_str(),NULL,16);
-
-            fprintf(Serial, "decode res: speed: %d, seq: %d, crc: %d\n", this->speed, this->seq, this->crc);
-            return true;
+        const char* seqSep = strchr(value, ':');
+        if (seqSep == nullptr) {
+            return false;
         }
-        Serial.println("not cmd, skip");
-        return false;
+        const char* crcSep = strchr(seqSep + 1, ':');
+        if (crcSep == nullptr) {
+            return false;
+        }
+
+        // atoi 遇到 ':' 自然停止，不需要先切分出子串
+        speed = atoi(value);
+        seq = atoi(seqSep + 1);
+        crc = (uint8_t) strtol(crcSep + 1, nullptr, 16);
+        return true;
     }
 
-    bool checkCrc() {
-        uint8_t crc = calcCrc();
-        bool res = this->crc == crc;
-        if (!res) {
-            fprintf(Serial, "checkCrc error: %d, %d\n", this->crc, crc);
+    uint8_t expectedCrc() const {
+        char buf[CRC_BUF_SIZE];
+        int n = snprintf(buf, sizeof(buf), "%s%d:%d", KEY, speed, seq);
+        if (n <= 0) {
+            return 0;
         }
-        return res;
+        if (n > (int) sizeof(buf) - 1) {
+            n = sizeof(buf) - 1;
+        }
+        return calcCRC8((const uint8_t*) buf, (crc_size_t) n);
     }
 
-    uint8_t calcCrc() {
-        String str = KEY + String(this->speed) + ":" + String(this->seq);
-        uint8_t crc = calcCRC8((uint8_t*) str.c_str(), str.length());
-        // this->crc = crc;
-        return crc;
+    bool checkCrc() const {
+        return crc == expectedCrc();
     }
 };
 
-class RespData {
-public:
-    int rpm = 0; 
+struct RespData {
+    unsigned long rpm = 0;
     int speed = 0;
 
-    RespData(int rpm,int speed) {
-        this->rpm = rpm;
-        this->speed = speed;
-    }
+    RespData(unsigned long rpm, int speed) : rpm(rpm), speed(speed) {}
 
-    String encode() {
-        return KEY + String(this->rpm) + ":" + String(this->speed);
+    void printTo(Print& out) const {
+        out.print(KEY);
+        out.print(rpm);
+        out.print(':');
+        out.println(speed);
     }
 };

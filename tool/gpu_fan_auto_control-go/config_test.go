@@ -1,0 +1,171 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+	return path
+}
+
+func testConfig() *Config {
+	return &Config{
+		FanLevel: []FanLevel{
+			{Temp: 20, Fan: 50},
+			{Temp: 30, Fan: 150},
+			{Temp: 35, Fan: 255},
+		},
+		Hysteresis: 3,
+	}
+}
+
+func TestSpeedAt(t *testing.T) {
+	cfg := testConfig()
+	tests := []struct {
+		temp int
+		want int
+	}{
+		{temp: 0, want: 0},
+		{temp: 19, want: 0},
+		{temp: 20, want: 50},
+		{temp: 29, want: 50},
+		{temp: 30, want: 150},
+		{temp: 34, want: 150},
+		{temp: 35, want: 255},
+		{temp: 90, want: 255},
+	}
+	for _, tt := range tests {
+		if got := cfg.speedAt(tt.temp); got != tt.want {
+			t.Errorf("speedAt(%d) = %d, want %d", tt.temp, got, tt.want)
+		}
+	}
+}
+
+func TestSpeedAtUsesMinFanBelowLowestLevel(t *testing.T) {
+	cfg := testConfig()
+	cfg.MinFan = 40
+	if got := cfg.speedAt(10); got != 40 {
+		t.Errorf("speedAt(10) = %d, want 40 (min_fan)", got)
+	}
+}
+
+func TestFanSpeedForHysteresis(t *testing.T) {
+	cfg := testConfig()
+	tests := []struct {
+		name    string
+		temp    int
+		current int
+		want    int
+	}{
+		{name: "upshift is immediate", temp: 30, current: 50, want: 150},
+		{name: "big jump upshift", temp: 40, current: 50, want: 255},
+		{name: "stays put inside the level", temp: 31, current: 150, want: 150},
+		{name: "holds just below the threshold", temp: 29, current: 150, want: 150},
+		{name: "still holds within hysteresis", temp: 27, current: 150, want: 150},
+		{name: "downshifts past hysteresis", temp: 26, current: 150, want: 50},
+		{name: "holds at top level", temp: 34, current: 255, want: 255},
+		{name: "downshifts from top level", temp: 31, current: 255, want: 150},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cfg.FanSpeedFor(tt.temp, tt.current); got != tt.want {
+				t.Errorf("FanSpeedFor(temp=%d, current=%d) = %d, want %d", tt.temp, tt.current, got, tt.want)
+			}
+		})
+	}
+}
+
+// 温度在阈值上下反复抖动时，转速不应该跟着来回跳
+func TestFanSpeedForDoesNotFlapAroundThreshold(t *testing.T) {
+	cfg := testConfig()
+	speed := 150
+	for _, temp := range []int{29, 30, 29, 30, 29, 30} {
+		speed = cfg.FanSpeedFor(temp, speed)
+		if speed != 150 {
+			t.Fatalf("speed flapped to %d at temp %d, want a steady 150", speed, temp)
+		}
+	}
+}
+
+func TestLoadConfigSortsLevelsByTemp(t *testing.T) {
+	path := writeConfig(t, `
+fan_level:
+  - temp: 35
+    fan: 255
+  - temp: 20
+    fan: 50
+  - temp: 30
+    fan: 150
+serial_port: /dev/ttyUSB1
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	wantTemps := []int{20, 30, 35}
+	for i, want := range wantTemps {
+		if cfg.FanLevel[i].Temp != want {
+			t.Fatalf("FanLevel[%d].Temp = %d, want %d (levels not sorted)", i, cfg.FanLevel[i].Temp, want)
+		}
+	}
+	// 排序生效后 speedAt 的提前 break 才是对的
+	if got := cfg.speedAt(30); got != 150 {
+		t.Errorf("speedAt(30) = %d, want 150", got)
+	}
+}
+
+func TestLoadConfigRejectsBadInput(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty fan_level", body: "serial_port: /dev/ttyUSB0\n"},
+		{name: "fan above range", body: "fan_level:\n  - temp: 20\n    fan: 300\n"},
+		{name: "negative fan", body: "fan_level:\n  - temp: 20\n    fan: -1\n"},
+		{name: "min_fan above range", body: "fan_level:\n  - temp: 20\n    fan: 50\nmin_fan: 999\n"},
+		{name: "negative hysteresis", body: "fan_level:\n  - temp: 20\n    fan: 50\nhysteresis: -2\n"},
+		{name: "malformed yaml", body: "fan_level: [\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := LoadConfig(writeConfig(t, tt.body)); err == nil {
+				t.Error("LoadConfig succeeded, want an error")
+			}
+		})
+	}
+}
+
+func TestLoadConfigMissingFile(t *testing.T) {
+	if _, err := LoadConfig(filepath.Join(t.TempDir(), "nope.yml")); err == nil {
+		t.Error("LoadConfig succeeded on a missing file, want an error")
+	}
+}
+
+func TestResolveSerialPort(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        *Config
+		flagPort   string
+		wantResult string
+	}{
+		{name: "flag wins", cfg: &Config{SerialPort: "/dev/ttyUSB1"}, flagPort: "/dev/ttyACM0", wantResult: "/dev/ttyACM0"},
+		{name: "config is used when no flag", cfg: &Config{SerialPort: "/dev/ttyUSB1"}, wantResult: "/dev/ttyUSB1"},
+		{name: "default when neither is set", cfg: &Config{}, wantResult: defaultSerialPort},
+		{name: "default when config failed to load", cfg: nil, wantResult: defaultSerialPort},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.ResolveSerialPort(tt.flagPort); got != tt.wantResult {
+				t.Errorf("ResolveSerialPort(%q) = %q, want %q", tt.flagPort, got, tt.wantResult)
+			}
+		})
+	}
+}

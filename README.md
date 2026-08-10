@@ -32,6 +32,8 @@ An intelligent PWM fan control system based on Arduino, featuring real-time RPM 
 ### Configuration File Example
 
 ```yaml
+# Temperature levels: a temperature >= temp selects the matching fan value (0-255).
+# The order does not matter, levels are sorted by temp on load.
 fan_level:
   - temp: 20
     fan: 50
@@ -39,7 +41,15 @@ fan_level:
     fan: 150
   - temp: 35
     fan: 255
-    
+
+# Speed used below the lowest threshold. Set to 0 to allow the fan to stop.
+min_fan: 50
+
+# Extra margin (°C) required before stepping down, so the speed does not
+# oscillate while the temperature hovers around a threshold.
+hysteresis: 3
+
+# Overridden by the -port flag.
 serial_port: /dev/ttyUSB0
 ```
 

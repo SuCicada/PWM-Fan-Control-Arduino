@@ -4,15 +4,17 @@
 #include <CRC.h>
 
 // 线协议（两个方向都以 '\n' 结尾）：
-//   请求  fanpwm:<speed>:<seq>:<crc8>
-//   响应  fanpwm:<rpm>:<speed>
-// crc8 是 "fanpwm:<speed>:<seq>" 的 CRC-8，两位十六进制。
+//   请求  cmd:<speed>:<seq>:<crc8>
+//   响应  state:<rpm>:<speed>
+// crc8 是 "cmd:<speed>:<seq>" 的 CRC-8，两位十六进制。
 // 参数为 poly 0x07 / init 0x00 / xorOut 0x00 / 不反转，与 Go 侧 crc8.CRC8 一致。
-const char KEY[] = "fanpwm:";
-const uint8_t KEY_LEN = sizeof(KEY) - 1;
+const char CMD_KEY[] = "cmd:";
+const uint8_t CMD_KEY_LEN = sizeof(CMD_KEY) - 1;
+const char STATE_KEY[] = "state:";
+const uint8_t STATE_KEY_LEN = sizeof(STATE_KEY) - 1;
 
 // 重建待校验串所需空间：前缀 + 两个 int 的十进制形式 + 分隔符
-const uint8_t CRC_BUF_SIZE = KEY_LEN + 16;
+const uint8_t CRC_BUF_SIZE = CMD_KEY_LEN + 16;
 
 struct ReqData {
     int speed = 0;
@@ -20,10 +22,10 @@ struct ReqData {
     uint8_t crc = 0;
 
     bool decode(const char* line) {
-        if (strncmp(line, KEY, KEY_LEN) != 0) {
+        if (strncmp(line, CMD_KEY, CMD_KEY_LEN) != 0) {
             return false;
         }
-        const char* value = line + KEY_LEN;
+        const char* value = line + CMD_KEY_LEN;
 
         const char* seqSep = strchr(value, ':');
         if (seqSep == nullptr) {
@@ -43,7 +45,7 @@ struct ReqData {
 
     uint8_t expectedCrc() const {
         char buf[CRC_BUF_SIZE];
-        int n = snprintf(buf, sizeof(buf), "%s%d:%d", KEY, speed, seq);
+        int n = snprintf(buf, sizeof(buf), "%s%d:%d", CMD_KEY, speed, seq);
         if (n <= 0) {
             return 0;
         }
@@ -65,7 +67,7 @@ struct RespData {
     RespData(unsigned long rpm, int speed) : rpm(rpm), speed(speed) {}
 
     void printTo(Print& out) const {
-        out.print(KEY);
+        out.print(STATE_KEY);
         out.print(rpm);
         out.print(':');
         out.println(speed);

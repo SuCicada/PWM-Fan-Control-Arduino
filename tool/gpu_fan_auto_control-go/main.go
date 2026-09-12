@@ -1,165 +1,141 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"flag"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/spf13/cobra"
+
+	"gpu_fan_auto_control/internal"
 )
-
-const nvidiaSMITimeout = 5 * time.Second
-
-// 需要目标机上装有 NVIDIA 驱动自带的 nvidia-smi
-func gpuTemps() ([]int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), nvidiaSMITimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits")
-	out, err := cmd.Output()
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("nvidia-smi timed out after %v", nvidiaSMITimeout)
-		}
-		// Output 失败时 stderr 已经在 ExitError 里，不需要再跑一次 nvidia-smi
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return nil, fmt.Errorf("nvidia-smi: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return nil, fmt.Errorf("nvidia-smi: %w", err)
-	}
-
-	var temps []int
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		v, err := strconv.Atoi(line)
-		if err != nil {
-			return nil, fmt.Errorf("parse temperature %q: %w", line, err)
-		}
-		temps = append(temps, v)
-	}
-	if len(temps) == 0 {
-		return nil, errors.New("nvidia-smi reported no GPU temperature")
-	}
-	return temps, nil
-}
-
-func maxGPUTemp() (int, error) {
-	temps, err := gpuTemps()
-	if err != nil {
-		return 0, err
-	}
-	maxTemp := temps[0]
-	for _, t := range temps[1:] {
-		maxTemp = max(maxTemp, t)
-	}
-	return maxTemp, nil
-}
-
-func runAutoControl(cfg *Config, sc *SerialController, dryRun bool) error {
-	temp, err := maxGPUTemp()
-	if err != nil {
-		return err
-	}
-
-	// 迟滞判断需要知道风扇当前转速，所以先读一次状态
-	current, err := sc.ReadStatus(statusTimeout)
-	if err != nil {
-		return err
-	}
-
-	target := cfg.FanSpeedFor(temp, current.Speed)
-	log.Printf("max temp %d°C, current speed %d, target speed %d", temp, current.Speed, target)
-
-	if dryRun {
-		log.Println("dryrun, nothing sent")
-		return nil
-	}
-	if target == current.Speed {
-		return nil
-	}
-	return sc.SetSpeedVerified(target)
-}
-
-// applySpeed 只在转速确实需要变化时才下发，省掉固件一次无谓的 EEPROM 写入。
-func applySpeed(sc *SerialController, speed int) error {
-	current, err := sc.ReadStatus(statusTimeout)
-	if err != nil {
-		return err
-	}
-	if current.Speed == speed {
-		log.Printf("fan speed already %d, skip", speed)
-		return nil
-	}
-	return sc.SetSpeedVerified(speed)
-}
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
-	if err := run(); err != nil {
+	if err := newRootCmd().Execute(); err != nil {
 		log.Printf("error: %v", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	var (
-		fanSpeed   int
-		portFlag   string
-		configFile string
-		dryRun     bool
-		readOnly   bool
-		setOnly    bool
-	)
-	flag.IntVar(&fanSpeed, "fan", -1, "manually set fan speed (0-255); omit to run temperature control")
-	flag.StringVar(&portFlag, "port", "", "serial port, overrides serial_port in the config file (default "+defaultSerialPort+")")
-	flag.StringVar(&configFile, "config", "config.yml", "config file")
-	flag.BoolVar(&dryRun, "dryrun", false, "compute the target speed but do not send it")
-	flag.BoolVar(&readOnly, "readonly", false, "read the current fan speed and exit")
-	flag.BoolVar(&setOnly, "setonly", false, "send the speed without reading it back to verify")
-	flag.Parse()
+func newRootCmd() *cobra.Command {
+	var port string
 
-	if fanSpeed > maxFanSpeed {
-		return fmt.Errorf("-fan %d is out of range 0-%d", fanSpeed, maxFanSpeed)
+	root := &cobra.Command{
+		Use:   "gpu_fan_auto_control",
+		Short: "PWM fan control over serial",
 	}
+	root.CompletionOptions.DisableDefaultCmd = true
+	root.PersistentFlags().StringVar(&port, "port", internal.DefaultSerialPort, "serial port")
 
-	// 只有温控模式离不开配置文件，手动和只读模式缺配置也应该能用
-	needsConfig := !readOnly && fanSpeed < 0
-	cfg, err := LoadConfig(configFile)
-	if err != nil {
-		if needsConfig {
-			return err
-		}
-		log.Printf("warning: %v, continuing without config", err)
+	var setSpeed int
+	setCmd := &cobra.Command{
+		Use:   "set",
+		Short: "Set fan speed",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if setSpeed < 0 || setSpeed > internal.MaxFanSpeed {
+				return fmt.Errorf("--speed must be 0-%d", internal.MaxFanSpeed)
+			}
+			sc := internal.NewSerialController(port)
+			defer sc.Close()
+			return sc.SetSpeedVerified(setSpeed)
+		},
 	}
+	setCmd.Flags().IntVar(&setSpeed, "speed", -1, "fan speed 0-100")
+	_ = setCmd.MarkFlagRequired("speed")
 
-	sc := NewSerialController(cfg.ResolveSerialPort(portFlag))
+	getCmd := &cobra.Command{
+		Use:   "get",
+		Short: "Get fan status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sc := internal.NewSerialController(port)
+			defer sc.Close()
+			res, err := sc.GetSpeed(internal.StatusTimeout)
+			if err != nil {
+				return err
+			}
+			fmt.Println(res.Speed)
+			return nil
+		},
+	}
+	_ = getCmd.Flags().Bool("speed", false, "print current fan speed")
+	_ = getCmd.MarkFlagRequired("speed")
+
+	var payloadSpeed int
+	payloadCmd := &cobra.Command{
+		Use:   "payload",
+		Short: "Print encoded cmd line (no serial)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if payloadSpeed < 0 || payloadSpeed > internal.MaxFanSpeed {
+				return fmt.Errorf("--speed must be 0-%d", internal.MaxFanSpeed)
+			}
+			fmt.Println(internal.NewPayloadReq(payloadSpeed).Encode())
+			return nil
+		},
+	}
+	payloadCmd.Flags().IntVar(&payloadSpeed, "speed", -1, "fan speed 0-100")
+	_ = payloadCmd.MarkFlagRequired("speed")
+
+	var listen string
+	serverCmd := &cobra.Command{
+		Use:   "server",
+		Short: "HTTP server for fan control",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runServer(port, listen)
+		},
+	}
+	serverCmd.Flags().StringVar(&listen, "listen", ":8080", "HTTP listen address")
+
+	root.AddCommand(setCmd, getCmd, payloadCmd, serverCmd)
+	return root
+}
+
+func runServer(port, listen string) error {
+	sc := internal.NewSerialController(port)
 	defer sc.Close()
-
-	switch {
-	case readOnly:
-		res, err := sc.ReadStatus(statusTimeout)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("fan speed: %d, rpm: %d\n", res.Speed, res.RPM)
-		return nil
-
-	case fanSpeed >= 0:
-		if setOnly {
-			return sc.Send(NewPayloadReq(fanSpeed))
-		}
-		return applySpeed(sc, fanSpeed)
-
-	default:
-		return runAutoControl(cfg, sc, dryRun)
+	if err := sc.EnsureReading(); err != nil {
+		return err
 	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/speed/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		raw := strings.Trim(strings.TrimPrefix(r.URL.Path, "/speed/"), "/")
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 || n > internal.MaxFanSpeed {
+			http.Error(w, fmt.Sprintf("speed must be 0-%d", internal.MaxFanSpeed), http.StatusBadRequest)
+			return
+		}
+		if err := sc.SetSpeedVerified(n); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/speed", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		res, err := sc.GetSpeed(internal.StatusTimeout)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int{
+			"speed": res.Speed,
+			"rpm":   res.RPM,
+		})
+	})
+
+	log.Printf("listening on %s, serial %s", listen, port)
+	return http.ListenAndServe(listen, mux)
 }

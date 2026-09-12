@@ -1,0 +1,13 @@
+[Unit]
+Description=GPU Fan Manager Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/peng/TOOL/gpu_fan_auto_control/gpu_fan_auto_control.sh server
+WorkingDirectory=/home/peng/TOOL/gpu_fan_auto_control
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

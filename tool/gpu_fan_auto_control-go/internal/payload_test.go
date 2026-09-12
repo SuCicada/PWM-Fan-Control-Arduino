@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"testing"
@@ -22,9 +22,9 @@ func TestPayloadReqEncode(t *testing.T) {
 		seq   int
 		want  string
 	}{
-		{"max speed", 255, 3, "fanpwm:255:3:" + crcSuffix(t, "fanpwm:255:3")},
-		{"zero speed", 0, 1, "fanpwm:0:1:" + crcSuffix(t, "fanpwm:0:1")},
-		{"mid speed", 150, 42, "fanpwm:150:42:" + crcSuffix(t, "fanpwm:150:42")},
+		{"max speed", 100, 3, "cmd:100:3:" + crcSuffix(t, "cmd:100:3")},
+		{"zero speed", 0, 1, "cmd:0:1:" + crcSuffix(t, "cmd:0:1")},
+		{"mid speed", 50, 42, "cmd:50:42:" + crcSuffix(t, "cmd:50:42")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -38,7 +38,7 @@ func TestPayloadReqEncode(t *testing.T) {
 
 // Encode 必须是纯函数：doCheckAndSendPayload 会先打日志再发送，两次结果不能不一样。
 func TestPayloadReqEncodeIsStable(t *testing.T) {
-	p := NewPayloadReq(150)
+	p := NewPayloadReq(50)
 	first := p.Encode()
 	if second := p.Encode(); first != second {
 		t.Errorf("Encode() is not stable: %q then %q", first, second)
@@ -47,8 +47,8 @@ func TestPayloadReqEncodeIsStable(t *testing.T) {
 
 func TestNewPayloadReqSeqIsNonZero(t *testing.T) {
 	for i := 0; i < 100; i++ {
-		if seq := NewPayloadReq(10).Seq; seq < 1 || seq > maxFanSpeed {
-			t.Fatalf("seq = %d, want 1-%d", seq, maxFanSpeed)
+		if seq := NewPayloadReq(10).Seq; seq < 1 || seq > MaxFanSpeed {
+			t.Fatalf("seq = %d, want 1-%d", seq, MaxFanSpeed)
 		}
 	}
 }
@@ -61,18 +61,19 @@ func TestDecodeToPayloadRes1(t *testing.T) {
 		wantSpeed int
 		wantNil   bool
 	}{
-		{name: "plain", line: "fanpwm:1572:10", wantRPM: 1572, wantSpeed: 10},
-		{name: "trailing space", line: "fanpwm:1572:10 ", wantRPM: 1572, wantSpeed: 10},
-		{name: "crlf", line: "fanpwm:0:255\r", wantRPM: 0, wantSpeed: 255},
+		{name: "plain", line: "state:1572:10", wantRPM: 1572, wantSpeed: 10},
+		{name: "trailing space", line: "state:1572:10 ", wantRPM: 1572, wantSpeed: 10},
+		{name: "crlf", line: "state:0:100\r", wantRPM: 0, wantSpeed: 100},
 		{name: "boot banner", line: "setup start", wantNil: true},
 		{name: "debug line", line: "speed: 128 -> 150", wantNil: true},
+		{name: "cmd line", line: "cmd:50:7:ab", wantNil: true},
 		{name: "empty", line: "", wantNil: true},
-		{name: "missing field", line: "fanpwm:1572", wantNil: true},
-		{name: "extra field", line: "fanpwm:1572:10:20", wantNil: true},
-		{name: "non numeric rpm", line: "fanpwm:abc:10", wantNil: true},
-		{name: "non numeric speed", line: "fanpwm:1572:xyz", wantNil: true},
-		{name: "speed above range", line: "fanpwm:1572:300", wantNil: true},
-		{name: "negative speed", line: "fanpwm:1572:-1", wantNil: true},
+		{name: "missing field", line: "state:1572", wantNil: true},
+		{name: "extra field", line: "state:1572:10:20", wantNil: true},
+		{name: "non numeric rpm", line: "state:abc:10", wantNil: true},
+		{name: "non numeric speed", line: "state:1572:xyz", wantNil: true},
+		{name: "speed above range", line: "state:1572:101", wantNil: true},
+		{name: "negative speed", line: "state:1572:-1", wantNil: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -93,9 +94,9 @@ func TestDecodeToPayloadRes1(t *testing.T) {
 	}
 }
 
-// 请求编码出去再按响应格式读回来，两侧对 KEY 和分隔符的理解必须一致
+// 请求编码出去再按响应格式读回来，两侧对前缀和分隔符的理解必须一致
 func TestEncodeDecodeAgreeOnFormat(t *testing.T) {
-	req := (&PayloadReq{Speed: 150, Seq: 7}).Encode()
+	req := (&PayloadReq{Speed: 50, Seq: 7}).Encode()
 	if DecodeToPayloadRes(req) != nil {
 		t.Errorf("DecodeToPayloadRes(%q) accepted a request line, want nil", req)
 	}

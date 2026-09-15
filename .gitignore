@@ -22,4 +22,4 @@ dist
 .venv
 *.iml
 
-tool/gpu_fan_auto_control-go/build
+tool/gpu_fan_auto_control-go/output

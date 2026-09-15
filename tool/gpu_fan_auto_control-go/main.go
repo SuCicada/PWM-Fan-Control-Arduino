@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
 	"gpu_fan_auto_control/internal"
@@ -94,6 +96,33 @@ func newRootCmd() *cobra.Command {
 	return root
 }
 
+func registerFanMetrics(sc *internal.SerialController) {
+	prometheus.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "gpu_fan_rpm",
+			Help: "Current fan RPM",
+		},
+		func() float64 {
+			if res := sc.Last(); res != nil {
+				return float64(res.RPM)
+			}
+			return 0
+		},
+	))
+	prometheus.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "gpu_fan_speed_percent",
+			Help: "Current fan speed percent(0-100)",
+		},
+		func() float64 {
+			if res := sc.Last(); res != nil {
+				return float64(res.Speed)
+			}
+			return 0
+		},
+	))
+}
+
 func runServer(port, listen string) error {
 	sc := internal.NewSerialController(port)
 	defer sc.Close()
@@ -101,7 +130,30 @@ func runServer(port, listen string) error {
 		return err
 	}
 
+	registerFanMetrics(sc)
+
 	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		res, err := sc.GetSpeed(internal.StatusTimeout)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int{
+			"speed": res.Speed,
+			"rpm":   res.RPM,
+		})
+	})
 	mux.HandleFunc("/speed/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

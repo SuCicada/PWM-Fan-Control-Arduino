@@ -77,7 +77,7 @@ func (s *SerialController) Close() error {
 }
 
 func (s *SerialController) HandleMessage(res *PayloadRes) {
-	log.Printf("received %s", res)
+	// log.Printf("received %s", res)
 	s.mu.Lock()
 	s.lastRes = res
 	s.mu.Unlock()

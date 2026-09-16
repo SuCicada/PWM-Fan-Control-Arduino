@@ -1,0 +1,16 @@
+# 本地构建产物
+output/
+gpu_fan_auto_control
+*.iml
+
+# 不进镜像的周边文件
+Dockerfile
+docker-compose.yml
+.dockerignore
+.gitignore
+Makefile
+*.sh
+*.yml
+*.bak
+systemd/
+config.yml

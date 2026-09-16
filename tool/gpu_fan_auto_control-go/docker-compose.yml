@@ -1,0 +1,16 @@
+services:
+  gpu-fan:
+    build: .
+    # 宿主机串口 -> 容器内路径（右边给 --port 用）
+    devices:
+      - ${SERIAL_PORT:-/dev/ttyUSB0}:/dev/ttyUSB0
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    # ENTRYPOINT 是二进制，这里覆盖默认 CMD
+    command:
+      - --port
+      - /dev/ttyUSB0
+      - server
+      - --listen
+      - 0.0.0.0:8080
+    restart: unless-stopped

@@ -1,7 +1,7 @@
 # 本地构建产物
 output/
 gpu_fan_auto_control
-*.iml
+*.imlf
 
 # 不进镜像的周边文件
 Dockerfile

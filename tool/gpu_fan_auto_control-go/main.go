@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -32,7 +34,7 @@ func newRootCmd() *cobra.Command {
 		Short: "PWM fan control over serial",
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
-	root.PersistentFlags().StringVar(&port, "port", internal.DefaultSerialPort, "serial port")
+	root.PersistentFlags().StringVar(&port, "port", "", "serial port (default "+internal.DefaultSerialPort+", server falls back to config)")
 
 	var setSpeed int
 	setCmd := &cobra.Command{
@@ -83,20 +85,22 @@ func newRootCmd() *cobra.Command {
 	_ = payloadCmd.MarkFlagRequired("speed")
 
 	var listen string
+	var configPath string
 	serverCmd := &cobra.Command{
 		Use:   "server",
 		Short: "HTTP server for fan control",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServer(port, listen)
+			return runServer(port, listen, configPath)
 		},
 	}
 	serverCmd.Flags().StringVar(&listen, "listen", ":8080", "HTTP listen address")
+	serverCmd.Flags().StringVar(&configPath, "config", "config.yml", "fan curve file")
 
 	root.AddCommand(setCmd, getCmd, payloadCmd, serverCmd)
 	return root
 }
 
-func registerFanMetrics(sc *internal.SerialController) {
+func registerFanMetrics(sc *internal.SerialController, ctrl *internal.Controller) {
 	prometheus.MustRegister(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Name: "gpu_fan_rpm",
@@ -121,16 +125,36 @@ func registerFanMetrics(sc *internal.SerialController) {
 			return 0
 		},
 	))
+	prometheus.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "gpu_temperature_celsius",
+			Help: "Latest GPU core temperature; NaN before the first sample",
+		},
+		func() float64 {
+			if v, ok := ctrl.LastTemp(); ok {
+				return float64(v)
+			}
+			return math.NaN()
+		},
+	))
 }
 
-func runServer(port, listen string) error {
+func runServer(port, listen, configPath string) error {
+	cfg, err := internal.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	port = cfg.ResolveSerialPort(port)
+
 	sc := internal.NewSerialController(port)
 	defer sc.Close()
 	if err := sc.EnsureReading(); err != nil {
 		return err
 	}
 
-	registerFanMetrics(sc)
+	ctrl := internal.NewController(cfg, sc)
+	registerFanMetrics(sc, ctrl)
+	go ctrl.Run(context.Background())
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
@@ -165,7 +189,7 @@ func runServer(port, listen string) error {
 			http.Error(w, fmt.Sprintf("speed must be 0-%d", internal.MaxFanSpeed), http.StatusBadRequest)
 			return
 		}
-		if err := sc.SetSpeedVerified(n); err != nil {
+		if err := ctrl.SetManual(n); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
@@ -188,6 +212,6 @@ func runServer(port, listen string) error {
 		})
 	})
 
-	log.Printf("listening on %s, serial %s", listen, port)
+	log.Printf("listening on %s, serial %s, config %s", listen, port, configPath)
 	return http.ListenAndServe(listen, mux)
 }

@@ -3,7 +3,7 @@ import random
 
 from crc import Calculator, Crc8
 
-KEY = "fanpwm:"
+KEY = "cmd:"
 
 class Payload:
     def __init__(self, speed, seq):

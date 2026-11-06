@@ -140,7 +140,14 @@ func (c *Controller) tick(ctx context.Context) {
 		c.failSince = time.Time{}
 		c.failing = false
 	}
+	// 断线重连后旧转速作废。板子复位会回到固件默认值，得按当前意图再写一次。
+	if c.boardSilent() {
+		c.haveCurrent = false
+	}
 	if !c.manualUntil.IsZero() && c.clock().Before(c.manualUntil) {
+		if !c.haveCurrent {
+			c.applyLocked(c.current)
+		}
 		return
 	}
 	if err != nil {
@@ -156,6 +163,15 @@ func (c *Controller) tick(ctx context.Context) {
 		log.Printf("gpu %d°C -> fan %d%%", temp, target)
 	}
 	c.applyLocked(target)
+}
+
+// boardSilent 表示这块板子会播报状态，但断线之后还没有新的一帧。
+func (c *Controller) boardSilent() bool {
+	b, ok := c.board.(interface{ Last() *PayloadRes })
+	if !ok {
+		return false
+	}
+	return b.Last() == nil
 }
 
 func (c *Controller) noteFailureLocked(err error) {

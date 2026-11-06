@@ -48,7 +48,7 @@ func (f *fakeBoard) GetSpeed(time.Duration) (*PayloadRes, error) {
 	return &PayloadRes{RPM: 1000, Speed: f.speed}, nil
 }
 
-func newTestController(board *fakeBoard, temp int, tempErr error) (*Controller, *time.Time) {
+func newTestController(board fanBoard, temp int, tempErr error) (*Controller, *time.Time) {
 	now := time.Now()
 	c := &Controller{
 		cfg: &Config{
@@ -163,6 +163,42 @@ func TestTickDoesNotCommandBeforeBoardStatus(t *testing.T) {
 	c.tick(context.Background())
 	if len(board.sets) != 0 {
 		t.Fatalf("commanded %v without a board status", board.sets)
+	}
+}
+
+type reportingBoard struct {
+	fakeBoard
+	last *PayloadRes
+}
+
+func (b *reportingBoard) Last() *PayloadRes { return b.last }
+
+func TestTickRestoresSpeedAfterBoardDrop(t *testing.T) {
+	board := &reportingBoard{fakeBoard: fakeBoard{speed: 0, has: true}}
+	c, _ := newTestController(board, 25, nil)
+	c.current = 20
+	c.haveCurrent = true
+
+	c.tick(context.Background())
+
+	if len(board.sets) != 1 || board.sets[0] != 20 {
+		t.Fatalf("sets = %v, want re-apply 20", board.sets)
+	}
+}
+
+func TestTickRestoresManualSpeedAfterBoardDrop(t *testing.T) {
+	board := &reportingBoard{fakeBoard: fakeBoard{speed: 30, has: true}}
+	c, _ := newTestController(board, 60, nil)
+	if err := c.SetManual(30); err != nil {
+		t.Fatalf("SetManual: %v", err)
+	}
+	board.sets = nil
+	board.speed = 0
+
+	c.tick(context.Background())
+
+	if board.speed != 30 {
+		t.Fatalf("speed = %d, want manual 30 reapplied", board.speed)
 	}
 }
 

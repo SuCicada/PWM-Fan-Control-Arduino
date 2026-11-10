@@ -33,4 +33,4 @@ upload-fan:
 # 	cp tool/gpu_fan_auto_control/config.yml tool/gpu_fan_auto_control/dist/config.yml
 # 	$(call upload, tool/gpu_fan_auto_control/dist/, TOOL/gpu_fan_auto_control/)
 upload-gpu_fan_auto_control:
-	sumake -C tool/gpu_fan_auto_control-go upload
+	sumake -C tool/gpu_fan_auto_control-go deploy

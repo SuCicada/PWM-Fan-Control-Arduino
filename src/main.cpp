@@ -52,5 +52,6 @@ void loop() {
     }
 
     reportRpm();
+    serviceFanKick();
     wdt_reset();
 }

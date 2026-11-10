@@ -14,6 +14,13 @@ const unsigned long REPORT_INTERVAL_MS = 1000;
 // 真 tach 在几千 RPM 时低电平仍有数毫秒。
 const unsigned long TACH_STABLE_US = 1000;
 
+// 20% 能维持已在转的转子，拉不动停住的。连续几秒 0 脉冲就全速 1 秒再回到原占空比，
+// 和插拔时 PWM 脚悬空、风扇按规范全速转一下是同一件事。
+// 仍然是 0 就拉长间隔，避免转速线断开时整晚每几秒吼一次。
+const unsigned long STALL_ZERO_MS = 5000;
+const unsigned long KICK_MS = 1000;
+const uint8_t KICK_STRIKE_CAP = 3;
+
 
 int tachPin = 3;
 unsigned long pulseCount = 0;
@@ -26,6 +33,13 @@ int current_speed_percent = 0;
 
 
 unsigned long lastReportMs = 0;
+
+bool kicking = false;
+unsigned long kickStartMs = 0;
+bool zeroArm = false;
+unsigned long zeroSinceMs = 0;
+uint8_t stallStrikes = 0;
+unsigned long nextKickOkMs = 0;
 
 
 void pollTach() {
@@ -93,6 +107,27 @@ void initFan(int fanPin, int sensorPin) {
     // OCR1A = 160;
 }
 
+void writeDuty(int speed_percent) {
+    OCR1A = (uint32_t)speed_percent * ICR1 / 100;
+}
+
+// 第 1 次失败后再等 1 分钟，第 2 次 5 分钟，之后 10 分钟。
+unsigned long kickCooldownMs(uint8_t strikes) {
+    if (strikes <= 1) {
+        return 60000UL;
+    }
+    if (strikes == 2) {
+        return 300000UL;
+    }
+    return 600000UL;
+}
+
+void clearStall() {
+    zeroArm = false;
+    stallStrikes = 0;
+    nextKickOkMs = 0;
+}
+
 void setSpeed(int speed_percent) {
     if (speed_percent < 0) {
         speed_percent = 0;
@@ -104,12 +139,61 @@ void setSpeed(int speed_percent) {
         Serial.print(F("set speed to "));
         Serial.println(speed_percent);
 
-        OCR1A = (uint32_t)speed_percent * ICR1 / 100;
+        kicking = false;
+        clearStall();
+        writeDuty(speed_percent);
         writeSpeedPercent((uint8_t)speed_percent);
         current_speed_percent = speed_percent;
         // 调速后旧窗口里的脉冲/噪声不能拿来换算，丢掉重开一秒窗
         resetTachWindow();
     }
+}
+
+// 全速这一秒里的读数不能用来判断「已经转起来了」，20% 接回来之后才算。
+void noteRpmSample(unsigned long rpm) {
+    if (kicking) {
+        return;
+    }
+    if (current_speed_percent <= 0 || rpm > 0) {
+        clearStall();
+        return;
+    }
+
+    unsigned long now = millis();
+    if (!zeroArm) {
+        zeroArm = true;
+        zeroSinceMs = now;
+        return;
+    }
+    if (now - zeroSinceMs < STALL_ZERO_MS) {
+        return;
+    }
+    if (nextKickOkMs != 0 && (long)(nextKickOkMs - now) > 0) {
+        return;
+    }
+
+    kicking = true;
+    kickStartMs = now;
+    if (stallStrikes < KICK_STRIKE_CAP) {
+        stallStrikes++;
+    }
+    // OCR1A == TOP 时输出恒高，没有 25kHz 边沿，这一秒的 tach 也是干净的
+    writeDuty(100);
+    Serial.println(F("fan stalled, full speed kick"));
+}
+
+void serviceFanKick() {
+    if (!kicking) {
+        return;
+    }
+    if (millis() - kickStartMs < KICK_MS) {
+        return;
+    }
+    kicking = false;
+    writeDuty(current_speed_percent);
+    nextKickOkMs = millis() + kickCooldownMs(stallStrikes);
+    zeroArm = false;
+    resetTachWindow();
 }
 
 void reportRpm() {
@@ -126,6 +210,8 @@ void reportRpm() {
     // 按实际经过的毫秒数换算，不能假定这一轮刚好是 1 秒
     unsigned long rpm = (counts * 60000UL) / (COUNTS_PER_REV * elapsed);
 
+    noteRpmSample(rpm);
+    // 上报的仍是设定占空比。全速只是把停住的转子带起来，主机不用跟着改档。
     RespData(rpm, current_speed_percent).printTo(Serial);
 }
 
